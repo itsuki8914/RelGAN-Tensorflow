@@ -119,11 +119,10 @@ def main():
     int_fake12 = buildDiscriminator(fake_12,None,v12,num_domains,reuse=[1,1],method="int")
     int_fakealp = buildDiscriminator(fake_alp,None,v12*alpha_t,num_domains, reuse=[1,1],method="int")
 
-    print(alpha_1.shape)
-    d_loss += tf.cond(alpha_1<=0.5, tf.reduce_mean(tf.square(int_fake11 - tf.zeros_like(int_fake11)))+
-        tf.reduce_mean(tf.square(int_fakealp - tf.tile(alpha_1,[2,2])),
-        tf.reduce_mean(tf.square(int_fake12 - tf.ones_like(int_fake12)))+
-        tf.reduce_mean(tf.square(int_fakealp - tf.tile(1-alpha_1,[4])))))
+    d_loss += tf.reduce_mean(tf.where(alpha_1<=0.5,
+        tf.square(int_fake11 - tf.zeros_like(int_fake11))+tf.reduce_mean(tf.square(int_fakealp - tf.reshape(alpha_1,[bs,1,1]))),
+        tf.square(int_fake12 - tf.ones_like(int_fake12))+tf.reduce_mean(tf.square(int_fakealp -tf.reshape((1-alpha_1),[bs,1,1])))))
+
 
     """
     if(alp<=0.5):
@@ -179,7 +178,7 @@ def main():
     printParam(scope="dis")
 
     print("%.4e sec took building model"%(time.time()-start))
-
+    return
     start = time.time()
 
     config = tf.ConfigProto(gpu_options=tf.GPUOptions(per_process_gpu_memory_fraction=0.7))
