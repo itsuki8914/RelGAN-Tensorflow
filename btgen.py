@@ -8,6 +8,7 @@ class BatchGenerator:
         self.rootPaths = glob.glob(imgdir+"/*")
         self.imgs_each_domain = []
         self.pathLens = []
+        #print(self.rootPaths)
         for i in range(num_domains):
             imagePath = glob.glob(self.rootPaths[i]+"/*")
             self.imgs_each_domain.append(imagePath)

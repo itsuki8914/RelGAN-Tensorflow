@@ -24,7 +24,7 @@ def _norm(x,name="BN",isTraining=True):
     o = tf.get_variable(name+"o", c,
                         initializer=tf.constant_initializer(0.0))
     mean, var = tf.nn.moments(x, axes=[1,2], keep_dims=True)
-    eps = 10e-10
+    eps = 1e-8
     normalized = (x - mean) / (tf.sqrt(var) + eps)
     return s * normalized + o
 
@@ -93,17 +93,33 @@ def _conv_layer(x, input_layer, output_layer, stride, filter_size=3, name="conv"
     h = tf.nn.leaky_relu(h)
     return h
 
-def _deconv_layer(x,input_layer, output_layer, stride=2, filter_size=3, name="deconv", isTraining=True):
+def resBlk(x, input_layer, output_layer, filter_size=3, num=0):
+    conv_w, conv_b = _conv_variable([3, 3, input_layer, output_layer], name="res%s-1" % num)
+    nn = _conv2d(x, conv_w, stride=1) + conv_b
+    nn = _norm(nn, name="Norm%s-1_g" %num)
+    nn = tf.nn.leaky_relu(nn)
+    conv_w, conv_b = _conv_variable([3, 3, output_layer, output_layer],name="res%s-2" % num)
+    nn = _conv2d(nn,conv_w,stride=1) + conv_b
+    nn = _norm(nn,name="Norm%s-2_g" %num)
+
+    #nn = tf.math.add(h,nn, name="resadd-%s" % i)
+    nn += x
+    return nn
+
+def _deconv_layer(x,input_layer, output_layer, stride=2, filter_size=4, name="deconv", isTraining=True):
     bs, h, w, c = x.get_shape().as_list()
     deconv_w, deconv_b = _deconv_variable([filter_size,filter_size,input_layer,output_layer],name="deconv"+name )
-    h = _deconv2d(x,deconv_w, output_shape=[bs,h*2,w*2,output_layer], stride=stride) + deconv_b
+    h = _deconv2d(x,deconv_w, output_shape=[bs,h*stride,w*stride,output_layer], stride=stride) + deconv_b
     h = _norm(h,name)
     h = tf.nn.leaky_relu(h)
     return h
 
-def buildGenerator(x,label_A2B,num_domains,reuse=False,isTraining=True,ksize=3,resBlock=12,name="generator"):
+def buildGenerator(x,label_A2B,num_domains,reuse=False,isTraining=True,ksize=3,resBlock=6,name="generator"):
 
     bs, h, w, c = x.get_shape().as_list()
+    #print(x.get_shape().as_list())
+
+    #bs, h, w, c = tf.shape(x)
     #l = tf.one_hot(label_A2B,num_domains,name="label_onehot")
     #l = tf.reshape(l,[int(bs),1,1,num_domains])
     l = tf.reshape(label_A2B,[int(bs),1,1,num_domains])
@@ -114,31 +130,20 @@ def buildGenerator(x,label_A2B,num_domains,reuse=False,isTraining=True,ksize=3,r
     with tf.variable_scope(name, reuse=reuse) as scope:
         if reuse: scope.reuse_variables()
 
-        conv_w, conv_b = _conv_variable([7,7,3+num_domains,64],name="conv4-2_g")
-        h = _conv2d(x,conv_w,stride=1) + conv_b
-        h = tf.nn.leaky_relu(h)
-
-        h = _conv_layer(h,64,128,2,ksize,"4-1_g")
-        h = _conv_layer(h,128,256,2,ksize,"4-0_g")
+        h = _conv_layer(x, 3+num_domains, 64, 1, 7, "ds1")
+        h = _conv_layer(h, 64, 128, 2, 3, "ds2")
+        h = _conv_layer(h, 128, 256, 2, 3, "ds3")
 
         for i in range(resBlock):
-            conv_w, conv_b = _conv_variable([ksize,ksize,256,256],name="res%s-1" % i)
-            nn = _conv2d(h,conv_w,stride=1) + conv_b
-            nn = _norm(h,name="Norm%s-1_g" %i)
-            nn = tf.nn.leaky_relu(nn)
-            conv_w, conv_b = _conv_variable([ksize,ksize,256,256],name="res%s-2" % i)
-            nn = _conv2d(nn,conv_w,stride=1) + conv_b
-            nn = _norm(h,name="Norm%s-2_g" %i)
+            h = resBlk(h, 256, 256, 3, i)
 
-            nn = tf.math.add(h,nn, name="resadd%s" % i)
-            h = nn
 
-        h = _deconv_layer(h, 256, 128, 2, ksize, "2-2_g")
+        h = _deconv_layer(h, 256, 128, 2, 4, "us3")
 
-        h = _deconv_layer(h, 128, 64, 2, ksize, "2-1_g")
+        h = _deconv_layer(h, 128, 64, 2, 4, "us2")
 
         #h = tf.math.add(tmp,h, name="add1")
-        conv_w, conv_b = _conv_variable([7,7,64,3],name="convo_g" )
+        conv_w, conv_b = _conv_variable([7,7,64,3],name="us1")
         h = _conv2d(h,conv_w,stride=1) + conv_b
         y = tf.nn.tanh(h)
 
@@ -152,30 +157,58 @@ def _conv_layer_dis(x,input_layer, output_layer, stride, filter_size=3, name="co
     return h
 
 
-def buildDiscriminator(y1, y2, num_domains, reuse=False, ksize=4,name="discriminator"):
-    with tf.variable_scope(name) as scope:
-        if reuse: scope.reuse_variables()
-        fn_l = 32
-        h = y
+def buildDiscriminator(y1, y2, vec, num_domains, reuse=[1,1], method="adv"):
+    fn_l = 32
+    def feature_layer(y):
+        with tf.variable_scope("discriminator") as scope:
+            if reuse[0]: scope.reuse_variables()
 
-        # conv1
-        h = _conv_layer_dis(h, 3, fn_l, 2, ksize, "1-1di")
-        # conv2
-        h = _conv_layer_dis(h, fn_l, fn_l*2, 2, ksize, "2-1di")
-        # conv3
-        h = _conv_layer_dis(h, fn_l*2, fn_l*4, 2, ksize, "3-1di")
-        # conv4
-        h = _conv_layer_dis(h, fn_l*4, fn_l*8, 2, ksize, "4-1di")
-        # conv5
-        h = _conv_layer_dis(h, fn_l*8, fn_l*16, 2, ksize, "5-1di")
+            # conv1
+            h = _conv_layer_dis(y, 3, fn_l, 2, 4, "fl1")
+            # conv2
+            h = _conv_layer_dis(h, fn_l, fn_l*2, 2, 4, "fl2")
+            # conv3
+            h = _conv_layer_dis(h, fn_l*2, fn_l*4, 2, 4, "fl3")
+            # conv4
+            h = _conv_layer_dis(h, fn_l*4, fn_l*8, 2, 4, "fl4")
+            # conv5
+            h = _conv_layer_dis(h, fn_l*8, fn_l*16, 2, 4, "fl5")
+            # conv6
+            h = _conv_layer_dis(h, fn_l*16, fn_l*32, 2, 4, "fl6")
+        return h
 
-        # conv6
-        conv_w, conv_b = _conv_variable([ksize,ksize,fn_l*16,1+num_domains],name="conv5di")
-        h = _conv2d(h,conv_w, stride=1) + conv_b
-        h = tf.reshape(tf.reduce_mean(h,axis=[1,2]),[-1,1+num_domains])
+    if method == "adv":
+        h = feature_layer(y1)
+        with tf.variable_scope("adv") as scope:
+            if reuse[1]: scope.reuse_variables()
+            conv_w, conv_b = _conv_variable([1,1,fn_l*32,1],name="adv")
+            adv = _conv2d(h,conv_w, stride=1) + conv_b
+            return adv
 
-        src = h[:,0]
-        cls = h[:,1:]
-        cls = tf.nn.softmax(cls)
 
-    return src, cls
+    if method == "int":
+        h = feature_layer(y1)
+        with tf.variable_scope("interpolation") as scope:
+            if reuse[1]: scope.reuse_variables()
+            conv_w, conv_b = _conv_variable([1,1,fn_l*32,fn_l],name="int")
+            interp = _conv2d(h,conv_w, stride=1) + conv_b
+            interp = tf.reduce_mean(interp, axis=3)
+            return interp
+
+    if method == "mat":
+
+        assert y2 != None
+        h1 = feature_layer(y1)
+        h2 = feature_layer(y2)
+        with tf.variable_scope("match") as scope:
+            if reuse[1]: scope.reuse_variables()
+            bs, h, w, c = h1.get_shape().as_list()
+            atr = tf.tile(vec, [h,w])
+            atr = tf.reshape(atr,[-1,h, w, num_domains])
+            h = tf.concat([h1, h2, atr], axis=3)
+            conv_w, conv_b = _conv_variable([1,1,fn_l*64+num_domains,fn_l*32],name="mat1")
+            mat = _conv2d(h,conv_w, stride=1) + conv_b
+            h = tf.nn.leaky_relu(h)
+            conv_w, conv_b = _conv_variable([1,1,fn_l*32,1],name="mat2")
+            mat = _conv2d(mat,conv_w, stride=1) + conv_b
+            return mat

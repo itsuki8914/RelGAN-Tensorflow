@@ -1,4 +1,4 @@
-import os,sys,shutil
+import os, sys, shutil, glob
 import tensorflow as tf
 import numpy as np
 import argparse
@@ -56,25 +56,27 @@ def main():
     critic = 5
 
     # loading images on training
-    domains = os.listdir(TRAIN_DIR)
-    v_domains = os.listdir(VAL_DIR)
+    domains = glob.glob(TRAIN_DIR)
+    v_domains = glob.glob(VAL_DIR)
     btGens = []
     valGens = []
     genLens = []
     valLens = []
-    num_domains = len(domains)
+    num_domains = 5#len(domains)
+    #print(num_domains)
 
     btGen = BatchGenerator(img_size=img_size, imgdir=TRAIN_DIR, num_domains=num_domains)
-    valGen = BatchGenerator(img_size=img_size, imgdir=VAL_DIR, num_domains=num_domains, aug=True)
+    valGen = BatchGenerator(img_size=img_size, imgdir=VAL_DIR, num_domains=num_domains, aug=False)
     # sample images
     _Z = np.zeros([bs,img_size,img_size,3])
     _X, x_atr, _, y_atr, _, z_atr  = btGen.getBatch(bs)
     _Z = (_X + 1)*127.5
-    print(x_atr)
-    print(y_atr)
-    print(z_atr)
+    #print(x_atr)
+    #print(y_atr)
+    #print(z_atr)
     _Z = tileImage(_Z)
     cv2.imwrite("input.png",_Z)
+
 
     #build models
     start = time.time()
@@ -87,10 +89,15 @@ def main():
     label_3 = tf.placeholder(tf.float32, [bs, num_domains])
     v12 = label_2 - label_1
     alpha = tf.placeholder(tf.float32, [bs])
+    alpha_1 = alpha
+    alpha_t = tf.tile(alpha,[num_domains])
+    alpha_t = tf.reshape(alpha_t, [bs,num_domains])
+    #print(alpha)
 
     fake_12 = buildGenerator(real_1,v12,num_domains, reuse=False, name="gen")
+    #print(fake_12)
     fake_11 = buildGenerator(real_1,label_2-label_2,num_domains, reuse=True, name="gen")
-    fake_alp = buildGenerator(real_1,v12*alpha,num_domains, reuse=True, name="gen")
+    fake_alp = buildGenerator(real_1,v12*alpha_t,num_domains, reuse=True, name="gen")
 
     g_loss = 0
     d_loss = 0
@@ -101,20 +108,23 @@ def main():
     sel_g_lambda = 10
 
     # Adversarial Loss(LS-GAN)
-    adv_fake = buildDiscriminator(fake_12,None,v12,num_domains,reuse=False,name="dis")
-    adv_real = buildDiscriminator(real_2,None,v12,num_domains,reuse=True,name="dis")
+    adv_fake = buildDiscriminator(fake_12,None,v12,num_domains,reuse=[0,0],method="adv")
+    adv_real = buildDiscriminator(real_2,None,v12,num_domains,reuse=[1,1],method="adv")
     d_loss += tf.reduce_mean(tf.square(adv_real-tf.ones_like(adv_real)))
     d_loss += tf.reduce_mean(tf.square(adv_fake-tf.zeros_like(adv_fake)))
     g_loss += tf.reduce_mean(tf.square(adv_fake-tf.ones_like(adv_fake))) * adv_g_lambda
 
     # Interpolation Loss
-    int_fake11 = buildDiscriminator(fake_11,None,0,num_domains,reuse=True,name="dis")
-    int_fake12 = buildDiscriminator(fake_12,None,v12,num_domains,reuse=True,name="dis")
-    int_fakealp = buildDiscriminator(fake_alp,None,v12*alpha,reuse=True,name="dis")
-    d_loss += tf.cond(alp<=0.5, tf.reduce_mean(tf.square(int_fake11-tf.zeros_like(int_fake11)))+
-        tf.reduce_mean(tf.square(int_fakealp-alp)),
-        tf.reduce_mean(tf.square(int_fake12-tf.ones_like(int_fake12)))+
-        tf.reduce_mean(tf.square(int_fakealp-(1-alp))))
+    int_fake11 = buildDiscriminator(fake_11,None,0,num_domains,reuse=[1,0],method="int")
+    int_fake12 = buildDiscriminator(fake_12,None,v12,num_domains,reuse=[1,1],method="int")
+    int_fakealp = buildDiscriminator(fake_alp,None,v12*alpha_t,num_domains, reuse=[1,1],method="int")
+
+    print(alpha_1.shape)
+    d_loss += tf.cond(alpha_1<=0.5, tf.reduce_mean(tf.square(int_fake11 - tf.zeros_like(int_fake11)))+
+        tf.reduce_mean(tf.square(int_fakealp - tf.tile(alpha_1,[2,2])),
+        tf.reduce_mean(tf.square(int_fake12 - tf.ones_like(int_fake12)))+
+        tf.reduce_mean(tf.square(int_fakealp - tf.tile(1-alpha_1,[4])))))
+
     """
     if(alp<=0.5):
         d_loss += tf.reduce_mean(tf.square(int_fake11-tf.zeros_like(int_fake11)))
@@ -123,26 +133,26 @@ def main():
         d_loss += tf.reduce_mean(tf.square(int_fake12-tf.ones_like(int_fake12)))
         d_loss += tf.reduce_mean(tf.square(int_fakealp-(1-alp)))
     """
-    g_loss += tf.reduce_mean(tf.square(int_fakealp)-tf.zeros_like(int_fakealp)) * int_g_lambda
+    g_loss += tf.reduce_mean(tf.square(int_fakealp) - tf.zeros_like(int_fakealp)) * int_g_lambda
 
     # Conditional Adversarial Loss
     v32 = label_2 - label_3
     v13 = label_3 - label_1
 
-    sr = buildDiscriminator(real_1, real_1, v12, num_domains, reuse=True,name="dis")
-    sf = buildDiscriminator(real_1, fake_12, v12, num_domains, reuse=True,name="dis")
-    sw1 = buildDiscriminator(real_3, real_2, v12, num_domains, reuse=True,name="dis")
-    sw2 = buildDiscriminator(real_1, real_2, v32, num_domains, reuse=True,name="dis")
-    sw3 = buildDiscriminator(real_1, real_2, v13, num_domains, reuse=True,name="dis")
-    sw4 = buildDiscriminator(real_1, real_3, v12, num_domains, reuse=True,name="dis")
+    sr = buildDiscriminator(real_1, real_1, v12, num_domains, reuse=[1,0],method="mat")
+    sf = buildDiscriminator(real_1, fake_12, v12, num_domains, reuse=[1,1],method="mat")
+    sw1 = buildDiscriminator(real_3, real_2, v12, num_domains, reuse=[1,1],method="mat")
+    sw2 = buildDiscriminator(real_1, real_2, v32, num_domains, reuse=[1,1],method="mat")
+    sw3 = buildDiscriminator(real_1, real_2, v13, num_domains, reuse=[1,1],method="mat")
+    sw4 = buildDiscriminator(real_1, real_3, v12, num_domains, reuse=[1,1],method="mat")
 
-    d_loss += tf.reduce_mean(tf.square(sr-tf.ones_like(sr)))
-    d_loss += tf.reduce_mean(tf.square(sf-tf.zeros_like(sf)))
-    d_loss += tf.reduce_mean(tf.square(w1-tf.zeros_like(w1)))
-    d_loss += tf.reduce_mean(tf.square(w2-tf.zeros_like(w2)))
-    d_loss += tf.reduce_mean(tf.square(w3-tf.zeros_like(w3)))
-    d_loss += tf.reduce_mean(tf.square(w4-tf.zeros_like(w4)))
-    g_loss += tf.reduce_mean(tf.square(sf-tf.ones_like(sf))) * con_g_lambda
+    d_loss += tf.reduce_mean(tf.square(sr - tf.ones_like(sr)))
+    d_loss += tf.reduce_mean(tf.square(sf - tf.zeros_like(sf)))
+    d_loss += tf.reduce_mean(tf.square(sw1 - tf.zeros_like(sw1)))
+    d_loss += tf.reduce_mean(tf.square(sw2 - tf.zeros_like(sw2)))
+    d_loss += tf.reduce_mean(tf.square(sw3 - tf.zeros_like(sw3)))
+    d_loss += tf.reduce_mean(tf.square(sw4 - tf.zeros_like(sw4)))
+    g_loss += tf.reduce_mean(tf.square(sf - tf.ones_like(sf))) * con_g_lambda
 
     # Cycle Reconstruction Loss
     fake_121 = buildGenerator(fake_12,-v12,num_domains, reuse=True, name="gen")
@@ -222,53 +232,54 @@ def main():
         """
 
         x, x_label, y, y_label, z, z_label = btGen.getBatch(bs)
-        x_labels = np.identity(num_domains)[x_label[i]]
-        #　ここ変
-        x_label = np.identity(num_domains)[x_label]
-        y_label = np.identity(num_domains)[y_label]
-        z_label = np.identity(num_domains)[z_label]
-        alp = xp.random.uniform(0, 1.0, size=bs)
+        x_labels = np.zeros([bs, num_domains])
+        y_labels = np.zeros([bs, num_domains])
+        z_labels = np.zeros([bs, num_domains])
+        for b in range(bs):
+            x_labels[b] = np.identity(num_domains)[x_label[b]]
+            y_labels[b] = np.identity(num_domains)[y_label[b]]
+            z_labels[b] = np.identity(num_domains)[z_label[b]]
 
-        feed ={real_1:x, real_2:y, real_3:z, label_1:x_label,
-            label_2:y_label, label_3:z_label, alpha:alp, lr: trans_lr}
+        alp = np.random.uniform(0, 1.0, size=bs)
+        print(x_labels)
+        print(x_labels.shape)
+
+        feed ={real_1:x, real_2:y, real_3:z, label_1:x_labels,
+            label_2:y_labels, label_3:z_labels, alpha:alp, lr: trans_lr}
         _, dis_loss, = sess.run([d_opt, d_loss], feed_dict=feed)
 
-        alp = xp.random.uniform(0, 1.0, size=bs)
-        feed ={real_1:x, label_1:x_label, label_2:y_label, alpha:alp, lr: trans_lr}
+        alp = np.random.uniform(0, 1.0, size=bs)
+        feed ={real_1:x, label_1:x_labels, label_2:y_labels, alpha:alp, lr: trans_lr}
 
-        _, gen_loss = sess.run([g_opt,g_loss], feed_dict=feed)
+        _, gen_loss = sess.run([g_opt, g_loss], feed_dict=feed)
 
         trans_lr = trans_lr *(1 - 2/max_step)
 
-        print("in step %s, dis_loss = %.4e,  gen_loss = %.4e"%(i,dis_loss, gen_loss))
-        print("d_r=%.3e d_f=%.3e d_c=%.3e g_a=%.3e g_c=%.3e g_r=%.3e "%(d_r,d_f,d_c,g_a,g_c,g_r))
+        print("in step %s, dis_loss = %.4e,  gen_loss = %.4e"%(i, dis_loss, gen_loss))
+        #print("d_r=%.3e d_f=%.3e d_c=%.3e g_a=%.3e g_c=%.3e g_r=%.3e "%(d_r,d_f,d_c,g_a,g_c,g_r))
 
         dis_hist.append(dis_loss)
         gen_hist.append(gen_loss)
 
+        if i % 100 ==0:
+            x, x_label, y, y_label, z, z_label = btGen.getBatch(bs)
+            x_labels = np.zeros([bs, num_domains])
+            y_labels = np.zeros([bs, num_domains])
+            z_labels = np.zeros([bs, num_domains])
+            for b in range(bs):
+                x_labels[i] = np.identity(num_domains)[x_label[i]]
+                y_labels[i] = np.identity(num_domains)[y_label[i]]
+                z_labels[i] = np.identity(num_domains)[z_label[i]]
 
-        if i %100 ==0:
-            id = np.random.choice(range(num_domains),bs)
-            bt_images = np.zeros([bs, img_size, img_size, 3])
-            directions = np.zeros([bs])
-            selfIDs = np.zeros([bs, num_domains])
+            alp = np.random.uniform(0, 1.0, size=bs)
+            feed ={real_1:x, label_1:x_labels, label_2:y_labels, alpha:alp, lr: trans_lr}
 
-            for j,num in enumerate(id):
-                imID = np.random.choice(range(valLens[num]),1)
-                img, dir, selfID = valGens[num].getBatch(1,imID)
-                bt_images[j] = img
-                directions[j] = dir
-
-            directions = np.vectorize(int)(directions)
-            one_hot_dir = np.identity(num_domains)[directions]
-            one_hot_id = np.identity(num_domains)[id]
-
-            img_fake_A2B = sess.run(fake_A2B,feed_dict={real_A:bt_images,label_A2B:one_hot_dir})
-
+            img_fake_A2B = sess.run(fake_12,feed_dict=feed)
+            """
             for im in range(len(bt_images)):
                 cv2.putText(bt_images[im], '{}'.format(directions[im]), (img_size-18, img_size-8), cv2.FONT_HERSHEY_COMPLEX, 0.8, (0, 0, 0), lineType=cv2.LINE_AA)
-
-            _A = tileImage(bt_images)
+            """
+            _A = tileImage(x)
             _A2B = tileImage(img_fake_A2B)
 
             _Z = np.concatenate([_A,_A2B],axis=1)
@@ -291,7 +302,7 @@ def main():
             print("%.4e sec took per100steps  lmd = %.4e ,lr = %.4e" %(time.time()-start, trans_lmd, trans_lr))
             start = time.time()
 
-        if i%2500==0 :
+        if i%5000==0 :
             saver.save(sess,os.path.join(SAVE_DIR,"model.ckpt"),i)
     sess.close()
 
