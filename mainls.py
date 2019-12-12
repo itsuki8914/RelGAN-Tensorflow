@@ -46,24 +46,21 @@ def main():
     if not os.path.exists(SVIM_DIR):
         os.makedirs(SVIM_DIR)
     img_size = 128
-    bs = 16
+    bs = 8
     lr = tf.placeholder(tf.float32)
 
-    trans_lr = 2e-4
+    trans_lr = 1e-4
     max_step = 100000
     gp_lmd = 10
     cls_lmd = 1
     critic = 5
 
     # loading images on training
-    domains = glob.glob(TRAIN_DIR)
-    v_domains = glob.glob(VAL_DIR)
-    btGens = []
-    valGens = []
-    genLens = []
-    valLens = []
-    num_domains = 5#len(domains)
-    #print(num_domains)
+    domains = glob.glob(TRAIN_DIR+"/*")
+    v_domains = glob.glob(VAL_DIR+"/*")
+
+    num_domains = len(domains)
+    assert num_domains == len(v_domains)
 
     btGen = BatchGenerator(img_size=img_size, imgdir=TRAIN_DIR, num_domains=num_domains)
     valGen = BatchGenerator(img_size=img_size, imgdir=VAL_DIR, num_domains=num_domains, aug=False)
@@ -101,6 +98,9 @@ def main():
 
     g_loss = 0
     d_loss = 0
+    adv_d_lambda = 1
+    con_d_lambda = 1
+    int_d_lambda = 10
     adv_g_lambda = 1
     con_g_lambda = 1
     int_g_lambda = 10
@@ -110,56 +110,53 @@ def main():
     # Adversarial Loss(LS-GAN)
     adv_fake = buildDiscriminator(fake_12,None,v12,num_domains,reuse=[0,0],method="adv")
     adv_real = buildDiscriminator(real_2,None,v12,num_domains,reuse=[1,1],method="adv")
-    d_loss += tf.reduce_mean(tf.square(adv_real-tf.ones_like(adv_real)))
-    d_loss += tf.reduce_mean(tf.square(adv_fake-tf.zeros_like(adv_fake)))
-    g_loss += tf.reduce_mean(tf.square(adv_fake-tf.ones_like(adv_fake))) * adv_g_lambda
+    d_adv_loss = tf.reduce_mean(tf.square(adv_real-tf.ones_like(adv_real))) + tf.reduce_mean(tf.square(adv_fake-tf.zeros_like(adv_fake))) * adv_d_lambda
+    d_loss += d_adv_loss
+    g_adv_loss =tf.reduce_mean(tf.square(adv_fake-tf.ones_like(adv_fake))) * adv_g_lambda
+    g_loss += g_adv_loss
 
     # Interpolation Loss
     int_fake11 = buildDiscriminator(fake_11,None,0,num_domains,reuse=[1,0],method="int")
     int_fake12 = buildDiscriminator(fake_12,None,v12,num_domains,reuse=[1,1],method="int")
     int_fakealp = buildDiscriminator(fake_alp,None,v12*alpha_t,num_domains, reuse=[1,1],method="int")
 
-    d_loss += tf.reduce_mean(tf.where(alpha_1<=0.5,
+    d_int_loss = tf.reduce_mean(tf.where(alpha_1<=0.5,
         tf.square(int_fake11 - tf.zeros_like(int_fake11))+tf.reduce_mean(tf.square(int_fakealp - tf.reshape(alpha_1,[bs,1,1]))),
-        tf.square(int_fake12 - tf.ones_like(int_fake12))+tf.reduce_mean(tf.square(int_fakealp -tf.reshape((1-alpha_1),[bs,1,1])))))
-
-
-    """
-    if(alp<=0.5):
-        d_loss += tf.reduce_mean(tf.square(int_fake11-tf.zeros_like(int_fake11)))
-        d_loss += tf.reduce_mean(tf.square(int_fakealp-alp))
-    else:
-        d_loss += tf.reduce_mean(tf.square(int_fake12-tf.ones_like(int_fake12)))
-        d_loss += tf.reduce_mean(tf.square(int_fakealp-(1-alp)))
-    """
-    g_loss += tf.reduce_mean(tf.square(int_fakealp) - tf.zeros_like(int_fakealp)) * int_g_lambda
+        tf.square(int_fake12 - tf.zeros_like(int_fake12))+tf.reduce_mean(tf.square(int_fakealp -tf.reshape((1-alpha_1),[bs,1,1]))))) * int_d_lambda
+    d_loss += d_int_loss
+    g_int_loss = tf.reduce_mean(tf.square(int_fakealp) - tf.zeros_like(int_fakealp)) * int_g_lambda
+    g_loss += g_int_loss
 
     # Conditional Adversarial Loss
     v32 = label_2 - label_3
     v13 = label_3 - label_1
 
-    sr = buildDiscriminator(real_1, real_1, v12, num_domains, reuse=[1,0],method="mat")
+    sr = buildDiscriminator(real_1, real_2, v12, num_domains, reuse=[1,0],method="mat")
     sf = buildDiscriminator(real_1, fake_12, v12, num_domains, reuse=[1,1],method="mat")
     sw1 = buildDiscriminator(real_3, real_2, v12, num_domains, reuse=[1,1],method="mat")
     sw2 = buildDiscriminator(real_1, real_2, v32, num_domains, reuse=[1,1],method="mat")
     sw3 = buildDiscriminator(real_1, real_2, v13, num_domains, reuse=[1,1],method="mat")
     sw4 = buildDiscriminator(real_1, real_3, v12, num_domains, reuse=[1,1],method="mat")
 
-    d_loss += tf.reduce_mean(tf.square(sr - tf.ones_like(sr)))
-    d_loss += tf.reduce_mean(tf.square(sf - tf.zeros_like(sf)))
-    d_loss += tf.reduce_mean(tf.square(sw1 - tf.zeros_like(sw1)))
-    d_loss += tf.reduce_mean(tf.square(sw2 - tf.zeros_like(sw2)))
-    d_loss += tf.reduce_mean(tf.square(sw3 - tf.zeros_like(sw3)))
-    d_loss += tf.reduce_mean(tf.square(sw4 - tf.zeros_like(sw4)))
-    g_loss += tf.reduce_mean(tf.square(sf - tf.ones_like(sf))) * con_g_lambda
+    d_cond_loss = tf.reduce_mean(tf.square(sr - tf.ones_like(sr)))
+    d_cond_loss += tf.reduce_mean(tf.square(sf - tf.zeros_like(sf)))
+    d_cond_loss += tf.reduce_mean(tf.square(sw1 - tf.zeros_like(sw1)))
+    d_cond_loss += tf.reduce_mean(tf.square(sw2 - tf.zeros_like(sw2)))
+    d_cond_loss += tf.reduce_mean(tf.square(sw3 - tf.zeros_like(sw3)))
+    d_cond_loss += tf.reduce_mean(tf.square(sw4 - tf.zeros_like(sw4)))
+    d_cond_loss *= con_d_lambda
+    d_loss += d_cond_loss
+    g_cond_loss = tf.reduce_mean(tf.square(sf - tf.ones_like(sf))) * con_g_lambda
+    g_loss += g_cond_loss
 
     # Cycle Reconstruction Loss
     fake_121 = buildGenerator(fake_12,-v12,num_domains, reuse=True, name="gen")
-    g_loss += tf.reduce_mean(tf.abs(real_1 - fake_121)) * cyc_g_lambda
+    g_rec_loss = tf.reduce_mean(tf.abs(real_1 - fake_121)) * cyc_g_lambda
+    g_loss += g_rec_loss
 
     # Self Reconstruction Loss
-    g_loss += tf.reduce_mean(tf.abs(real_1 - fake_11)) * sel_g_lambda
-
+    g_self_loss = tf.reduce_mean(tf.abs(real_1 - fake_11)) * sel_g_lambda
+    g_loss += g_self_loss
     wd_gen = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES,scope="gen")
     wd_dis = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES,scope="dis")
 
@@ -178,7 +175,7 @@ def main():
     printParam(scope="dis")
 
     print("%.4e sec took building model"%(time.time()-start))
-    return
+
     start = time.time()
 
     config = tf.ConfigProto(gpu_options=tf.GPUOptions(per_process_gpu_memory_fraction=0.7))
@@ -203,32 +200,12 @@ def main():
 
     print("%.4e sec took initializing"%(time.time()-start))
 
-
     gen_hist= []
     dis_hist= []
 
     start = time.time()
 
     for i in range(max_step + 1):
-        """
-        # id: self domains (real class)
-        # bt_images: images
-        # direction: transform directions each images (fake class)
-        id = np.random.choice(range(num_domains),bs)
-        bt_images = np.zeros([bs, img_size, img_size, 3])
-        directions = np.zeros([bs])
-        selfIDs = np.zeros([bs, num_domains])
-
-        for j,num in enumerate(id):
-            imID = np.random.choice(range(genLens[num]),1)
-            img, dir, selfID = btGens[num].getBatch(1,imID)
-            bt_images[j] = img
-            directions[j] = dir
-
-        directions = np.vectorize(int)(directions)
-        one_hot_dir = np.identity(num_domains)[directions]
-        one_hot_id = np.identity(num_domains)[id]
-        """
 
         x, x_label, y, y_label, z, z_label = btGen.getBatch(bs)
         x_labels = np.zeros([bs, num_domains])
@@ -240,44 +217,46 @@ def main():
             z_labels[b] = np.identity(num_domains)[z_label[b]]
 
         alp = np.random.uniform(0, 1.0, size=bs)
-        print(x_labels)
-        print(x_labels.shape)
 
         feed ={real_1:x, real_2:y, real_3:z, label_1:x_labels,
             label_2:y_labels, label_3:z_labels, alpha:alp, lr: trans_lr}
-        _, dis_loss, = sess.run([d_opt, d_loss], feed_dict=feed)
+        _, dis_loss, dis_adv, dis_cond, dis_int = sess.run(
+            [d_opt, d_loss, d_adv_loss, d_cond_loss, d_int_loss], feed_dict=feed)
 
         alp = np.random.uniform(0, 1.0, size=bs)
         feed ={real_1:x, label_1:x_labels, label_2:y_labels, alpha:alp, lr: trans_lr}
 
-        _, gen_loss = sess.run([g_opt, g_loss], feed_dict=feed)
+        _, gen_loss, gen_adv, gen_cond, gen_int, gen_rec, gen_self = sess.run(
+            [g_opt, g_loss, g_adv_loss, g_cond_loss, g_int_loss, g_rec_loss, g_self_loss], feed_dict=feed)
 
         trans_lr = trans_lr *(1 - 2/max_step)
 
         print("in step %s, dis_loss = %.4e,  gen_loss = %.4e"%(i, dis_loss, gen_loss))
-        #print("d_r=%.3e d_f=%.3e d_c=%.3e g_a=%.3e g_c=%.3e g_r=%.3e "%(d_r,d_f,d_c,g_a,g_c,g_r))
+        print("d_a=%.3e d_c=%.3e d_i=%.3e"%(dis_adv,dis_cond,dis_int))
+        print("g_a=%.3e g_c=%.3e g_i=%.3e g_r=%.3e g_s=%.3e"%(gen_adv,gen_cond,gen_int,gen_rec,gen_self))
 
         dis_hist.append(dis_loss)
         gen_hist.append(gen_loss)
 
         if i % 100 ==0:
-            x, x_label, y, y_label, z, z_label = btGen.getBatch(bs)
+            x, x_label, y, y_label, z, z_label = valGen.getBatch(bs)
             x_labels = np.zeros([bs, num_domains])
             y_labels = np.zeros([bs, num_domains])
             z_labels = np.zeros([bs, num_domains])
             for b in range(bs):
-                x_labels[i] = np.identity(num_domains)[x_label[i]]
-                y_labels[i] = np.identity(num_domains)[y_label[i]]
-                z_labels[i] = np.identity(num_domains)[z_label[i]]
+                x_labels[b] = np.identity(num_domains)[x_label[b]]
+                y_labels[b] = np.identity(num_domains)[y_label[b]]
+                z_labels[b] = np.identity(num_domains)[z_label[b]]
 
             alp = np.random.uniform(0, 1.0, size=bs)
             feed ={real_1:x, label_1:x_labels, label_2:y_labels, alpha:alp, lr: trans_lr}
 
             img_fake_A2B = sess.run(fake_12,feed_dict=feed)
-            """
-            for im in range(len(bt_images)):
-                cv2.putText(bt_images[im], '{}'.format(directions[im]), (img_size-18, img_size-8), cv2.FONT_HERSHEY_COMPLEX, 0.8, (0, 0, 0), lineType=cv2.LINE_AA)
-            """
+
+            for im in range(len(x)):
+                cv2.putText(x[im], '{}'.format(x_label[im]), (img_size-18, img_size-8), cv2.FONT_HERSHEY_COMPLEX, 0.8, (0, 0, 0), lineType=cv2.LINE_AA)
+                cv2.putText(img_fake_A2B[im], '{}'.format(y_label[im]), (img_size-18, img_size-8), cv2.FONT_HERSHEY_COMPLEX, 0.8, (0, 0, 0), lineType=cv2.LINE_AA)
+
             _A = tileImage(x)
             _A2B = tileImage(img_fake_A2B)
 
@@ -298,10 +277,10 @@ def main():
             plt.savefig("histGAN.png")
             plt.close()
 
-            print("%.4e sec took per100steps  lmd = %.4e ,lr = %.4e" %(time.time()-start, trans_lmd, trans_lr))
+            print("%.4e sec took per100steps ,lr = %.4e" %(time.time()-start, trans_lr))
             start = time.time()
 
-        if i%5000==0 :
+        if i%5000==0 and i!=0:
             saver.save(sess,os.path.join(SAVE_DIR,"model.ckpt"),i)
     sess.close()
 

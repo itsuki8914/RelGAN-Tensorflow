@@ -93,7 +93,7 @@ def _conv_layer(x, input_layer, output_layer, stride, filter_size=3, name="conv"
     h = tf.nn.leaky_relu(h)
     return h
 
-def resBlk(x, input_layer, output_layer, filter_size=3, num=0):
+def _resBlk(x, input_layer, output_layer, filter_size=3, num=0):
     conv_w, conv_b = _conv_variable([3, 3, input_layer, output_layer], name="res%s-1" % num)
     nn = _conv2d(x, conv_w, stride=1) + conv_b
     nn = _norm(nn, name="Norm%s-1_g" %num)
@@ -135,7 +135,7 @@ def buildGenerator(x,label_A2B,num_domains,reuse=False,isTraining=True,ksize=3,r
         h = _conv_layer(h, 128, 256, 2, 3, "ds3")
 
         for i in range(resBlock):
-            h = resBlk(h, 256, 256, 3, i)
+            h = _resBlk(h, 256, 256, 3, i)
 
 
         h = _deconv_layer(h, 256, 128, 2, 4, "us3")
@@ -174,29 +174,27 @@ def buildDiscriminator(y1, y2, vec, num_domains, reuse=[1,1], method="adv"):
             # conv5
             h = _conv_layer_dis(h, fn_l*8, fn_l*16, 2, 4, "fl5")
             # conv6
-            h = _conv_layer_dis(h, fn_l*16, fn_l*32, 2, 4, "fl6")
+            #h = _conv_layer_dis(h, fn_l*16, fn_l*32, 2, 4, "fl6")
         return h
 
     if method == "adv":
         h = feature_layer(y1)
         with tf.variable_scope("adv") as scope:
             if reuse[1]: scope.reuse_variables()
-            conv_w, conv_b = _conv_variable([1,1,fn_l*32,1],name="adv")
+            conv_w, conv_b = _conv_variable([1,1,fn_l*16,1],name="adv")
             adv = _conv2d(h,conv_w, stride=1) + conv_b
             return adv
-
 
     if method == "int":
         h = feature_layer(y1)
         with tf.variable_scope("interpolation") as scope:
             if reuse[1]: scope.reuse_variables()
-            conv_w, conv_b = _conv_variable([1,1,fn_l*32,fn_l],name="int")
+            conv_w, conv_b = _conv_variable([1,1,fn_l*16,fn_l],name="int")
             interp = _conv2d(h,conv_w, stride=1) + conv_b
             interp = tf.reduce_mean(interp, axis=3)
             return interp
 
     if method == "mat":
-
         assert y2 != None
         h1 = feature_layer(y1)
         h2 = feature_layer(y2)
@@ -206,9 +204,9 @@ def buildDiscriminator(y1, y2, vec, num_domains, reuse=[1,1], method="adv"):
             atr = tf.tile(vec, [h,w])
             atr = tf.reshape(atr,[-1,h, w, num_domains])
             h = tf.concat([h1, h2, atr], axis=3)
-            conv_w, conv_b = _conv_variable([1,1,fn_l*64+num_domains,fn_l*32],name="mat1")
+            conv_w, conv_b = _conv_variable([1,1,fn_l*32+num_domains,fn_l*16],name="mat1")
             mat = _conv2d(h,conv_w, stride=1) + conv_b
             h = tf.nn.leaky_relu(h)
-            conv_w, conv_b = _conv_variable([1,1,fn_l*32,1],name="mat2")
+            conv_w, conv_b = _conv_variable([1,1,fn_l*16,1],name="mat2")
             mat = _conv2d(mat,conv_w, stride=1) + conv_b
             return mat
