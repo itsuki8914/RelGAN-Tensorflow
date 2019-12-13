@@ -17,10 +17,12 @@ num_domains = len(domains)
 def main(arg):
 
     #folder_path = VAL_DIR + os.sep + arg[0]
-    folder_path = arg[0]
-    directions = int(arg[1])
+    folder_path = arg.folder
+    source_label = int(arg.source_label)
+    target_label = arg.target_label
+    alp = arg.interpolation
 
-    print("folderA = {}, direction = {} ".format(arg[0],domains[directions]))
+    #print("folderA = {}, direction = {} ".format(arg[0],domains[directions]))
     if not os.path.exists(OUT_DIR_A2B):
         os.makedirs(OUT_DIR_A2B)
     folderA2B = folder_path
@@ -29,9 +31,13 @@ def main(arg):
 
     start = time.time()
 
-    real_A = tf.placeholder(tf.float32, [1, img_size, img_size, 3 ])
-    label_A2B = tf.placeholder(tf.float32, [1, num_domains]) # target image atr
-    fake_A2B = buildGenerator(real_A,label_A2B,num_domains, reuse=False, nBatch=1, name="gen")
+    real_1 = tf.placeholder(tf.float32, [1, img_size, img_size, 3])
+    label_1 = tf.placeholder(tf.float32, [1, num_domains])
+    label_2 = tf.placeholder(tf.float32, [1, num_domains])
+    alpha = tf.placeholder(tf.float32, [])
+    alpha_t = tf.reshape(alpha, [1,1])
+    v12 = label_2 - label_1
+    fake_alp = buildGenerator(real_1,v12*alpha_t,num_domains, reuse=False, name="gen")
 
     sess = tf.Session()
     saver = tf.train.Saver()
@@ -54,7 +60,7 @@ def main(arg):
 
     start = time.time()
     #
-    print("{} has {} files".format(arg[0], len(filesA2B)))
+    #print("{} has {} files".format(arg[0], len(filesA2B)))
     for i in range(len(filesA2B)):
 
         img_path = "{}/{}".format(folderA2B,filesA2B[i])
@@ -65,24 +71,38 @@ def main(arg):
         input = cv2.resize(img,(img_size,img_size))
         input = input.reshape(1, img_size, img_size, 3)
 
-    
-        directions = np.vectorize(int)(directions)
-        one_hot_dir = np.identity(num_domains)[directions]
-        one_hot_dir = one_hot_dir.reshape(1,num_domains)
+        x_label = source_label
+        y_label = target_label
+        x_labels = np.zeros([1, num_domains])
+        y_labels = np.zeros([1, num_domains])
+        for b in range(1):
+            x_labels[b] = np.identity(num_domains)[x_label]
+            y_labels[b] = np.identity(num_domains)[y_label]
 
-        out = sess.run(fake_A2B,feed_dict={real_A:input, label_A2B:one_hot_dir})
+        feed ={real_1:input, label_1:x_labels, label_2:y_labels, alpha:alp,}
+
+        out = sess.run(fake_alp,feed_dict=feed)
         out = out.reshape(img_size,img_size,3)
         image_name = os.path.splitext(os.path.basename(img_path))[0]
         denorm_o = (out + 1) * 127.5
-        cv2.imwrite(OUT_DIR_A2B+os.sep+'predicted_' + image_name + "_" + str(directions) + '.png', denorm_o)
+        cv2.imwrite(OUT_DIR_A2B+os.sep+'predicted_' + image_name + "_" + str(target_label) + '.png', denorm_o)
 
     print("%.4e sec took for predicting" %(time.time()-start))
 
 if __name__ == '__main__':
-    arg = []
+    parser = argparse.ArgumentParser(description='')
+    parser.add_argument('--folder',"-f", dest='folder', type=str, default=None, help='folder name')
+    parser.add_argument('--source_label',"-s", dest='source_label', type=int, default=None, help='source label')
+    parser.add_argument('--target_label',"-t", dest='target_label', type=int, default=None, help='target label')
+    parser.add_argument('--interpolation',"-i", dest='interpolation', type=float, default=1.0, help='interpolation late(0<interp<1)')
+    args = parser.parse_args()
+
+    main(args)
+    """
     try:
         arg.append(sys.argv[1])
         arg.append(sys.argv[2])
         main(arg)
     except:
-        print("Usage: python pred.py [folder] [direction]")
+        print("Usage: python pred.py [folder] [source_label] [target_label] [interpolation]")
+    """

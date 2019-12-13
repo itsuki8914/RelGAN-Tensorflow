@@ -86,9 +86,11 @@ def main():
     label_3 = tf.placeholder(tf.float32, [bs, num_domains])
     v12 = label_2 - label_1
     alpha = tf.placeholder(tf.float32, [bs])
+    rnd_ph = tf.placeholder(tf.float32, [])
     alpha_1 = alpha
-    alpha_t = tf.tile(alpha,[num_domains])
-    alpha_t = tf.reshape(alpha_t, [bs,num_domains])
+    #alpha_t = tf.tile(alpha,[num_domains])
+    alpha_t = tf.reshape(alpha, [bs,1])
+    #alpha_t = tf.reshape(alpha_t, [bs,num_domains])
     #print(alpha)
 
     fake_12 = buildGenerator(real_1,v12,num_domains, reuse=False, name="gen")
@@ -99,7 +101,7 @@ def main():
     g_loss = 0
     d_loss = 0
     adv_d_lambda = 1
-    con_d_lambda = 1
+    con_d_lambda = 10
     int_d_lambda = 10
     adv_g_lambda = 1
     con_g_lambda = 1
@@ -110,7 +112,7 @@ def main():
     # Adversarial Loss(LS-GAN)
     adv_fake = buildDiscriminator(fake_12,None,v12,num_domains,reuse=[0,0],method="adv")
     adv_real = buildDiscriminator(real_2,None,v12,num_domains,reuse=[1,1],method="adv")
-    d_adv_loss = tf.reduce_mean(tf.square(adv_real-tf.ones_like(adv_real))) + tf.reduce_mean(tf.square(adv_fake-tf.zeros_like(adv_fake))) * adv_d_lambda
+    d_adv_loss = (tf.reduce_mean(tf.square(adv_real-tf.ones_like(adv_real))) + tf.reduce_mean(tf.square(adv_fake-tf.zeros_like(adv_fake)))) * adv_d_lambda
     d_loss += d_adv_loss
     g_adv_loss =tf.reduce_mean(tf.square(adv_fake-tf.ones_like(adv_fake))) * adv_g_lambda
     g_loss += g_adv_loss
@@ -119,10 +121,15 @@ def main():
     int_fake11 = buildDiscriminator(fake_11,None,0,num_domains,reuse=[1,0],method="int")
     int_fake12 = buildDiscriminator(fake_12,None,v12,num_domains,reuse=[1,1],method="int")
     int_fakealp = buildDiscriminator(fake_alp,None,v12*alpha_t,num_domains, reuse=[1,1],method="int")
+    """
+    d_int_loss = tf.reduce_mean(tf.where(rnd_ph==0,
+        tf.square(int_fake11 - tf.zeros_like(int_fake11))+tf.square(int_fakealp - tf.reshape(alpha_1,[bs,1,1])),
+        tf.square(int_fake12 - tf.zeros_like(int_fake12))+tf.square(int_fakealp -tf.reshape((1-alpha_1),[bs,1,1])))) * int_d_lambda
+    """
+    d_int_loss = tf.reduce_mean(tf.cond(tf.constant(rnd_ph==0, dtype=tf.bool),
+        lambda:tf.square(int_fake11 - tf.zeros_like(int_fake11))+tf.square(int_fakealp - tf.reshape(alpha_1,[bs,1,1])),
+        lambda:tf.square(int_fake12 - tf.zeros_like(int_fake12))+tf.square(int_fakealp -tf.reshape((1-alpha_1),[bs,1,1])))) * int_d_lambda
 
-    d_int_loss = tf.reduce_mean(tf.where(alpha_1<=0.5,
-        tf.square(int_fake11 - tf.zeros_like(int_fake11))+tf.reduce_mean(tf.square(int_fakealp - tf.reshape(alpha_1,[bs,1,1]))),
-        tf.square(int_fake12 - tf.zeros_like(int_fake12))+tf.reduce_mean(tf.square(int_fakealp -tf.reshape((1-alpha_1),[bs,1,1]))))) * int_d_lambda
     d_loss += d_int_loss
     g_int_loss = tf.reduce_mean(tf.square(int_fakealp) - tf.zeros_like(int_fakealp)) * int_g_lambda
     g_loss += g_int_loss
@@ -216,15 +223,17 @@ def main():
             y_labels[b] = np.identity(num_domains)[y_label[b]]
             z_labels[b] = np.identity(num_domains)[z_label[b]]
 
-        alp = np.random.uniform(0, 1.0, size=bs)
+        rnd = np.random.randint(2)
+        alp = np.random.uniform(0, 0.5, size=bs) if rnd==0 else np.random.uniform(0.5, 1.0, size=bs)
 
         feed ={real_1:x, real_2:y, real_3:z, label_1:x_labels,
-            label_2:y_labels, label_3:z_labels, alpha:alp, lr: trans_lr}
+            label_2:y_labels, label_3:z_labels, alpha:alp, rnd_ph:rnd, lr: trans_lr}
         _, dis_loss, dis_adv, dis_cond, dis_int = sess.run(
             [d_opt, d_loss, d_adv_loss, d_cond_loss, d_int_loss], feed_dict=feed)
 
-        alp = np.random.uniform(0, 1.0, size=bs)
-        feed ={real_1:x, label_1:x_labels, label_2:y_labels, alpha:alp, lr: trans_lr}
+        rnd = np.random.randint(2)
+        alp = np.random.uniform(0, 0.5, size=bs) if rnd==0 else np.random.uniform(0.5, 1.0, size=bs)
+        feed ={real_1:x, label_1:x_labels, label_2:y_labels, alpha:alp, rnd_ph:rnd, lr: trans_lr}
 
         _, gen_loss, gen_adv, gen_cond, gen_int, gen_rec, gen_self = sess.run(
             [g_opt, g_loss, g_adv_loss, g_cond_loss, g_int_loss, g_rec_loss, g_self_loss], feed_dict=feed)
@@ -248,14 +257,15 @@ def main():
                 y_labels[b] = np.identity(num_domains)[y_label[b]]
                 z_labels[b] = np.identity(num_domains)[z_label[b]]
 
-            alp = np.random.uniform(0, 1.0, size=bs)
-            feed ={real_1:x, label_1:x_labels, label_2:y_labels, alpha:alp, lr: trans_lr}
+            alp = np.random.uniform(0, 0.5, size=bs) if rnd==0 else np.random.uniform(0.5, 1.0, size=bs)
+            feed ={real_1:x, label_1:x_labels, label_2:y_labels, alpha:alp, rnd_ph:rnd, lr: trans_lr}
 
             img_fake_A2B = sess.run(fake_12,feed_dict=feed)
 
             for im in range(len(x)):
                 cv2.putText(x[im], '{}'.format(x_label[im]), (img_size-18, img_size-8), cv2.FONT_HERSHEY_COMPLEX, 0.8, (0, 0, 0), lineType=cv2.LINE_AA)
                 cv2.putText(img_fake_A2B[im], '{}'.format(y_label[im]), (img_size-18, img_size-8), cv2.FONT_HERSHEY_COMPLEX, 0.8, (0, 0, 0), lineType=cv2.LINE_AA)
+                cv2.putText(img_fake_A2B[im], '%.2f'%(alp[im]), (0, img_size-8), cv2.FONT_HERSHEY_COMPLEX, 0.8, (0, 0, 0), lineType=cv2.LINE_AA)
 
             _A = tileImage(x)
             _A2B = tileImage(img_fake_A2B)

@@ -191,7 +191,7 @@ def buildDiscriminator(y1, y2, vec, num_domains, reuse=[1,1], method="adv"):
             if reuse[1]: scope.reuse_variables()
             conv_w, conv_b = _conv_variable([1,1,fn_l*16,fn_l],name="int")
             interp = _conv2d(h,conv_w, stride=1) + conv_b
-            interp = tf.reduce_mean(interp, axis=3)
+            interp = tf.reduce_mean(interp, axis=(1,2))
             return interp
 
     if method == "mat":
