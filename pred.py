@@ -21,13 +21,14 @@ def main(arg):
     source_label = int(arg.source_label)
     target_label = arg.target_label
     alp = arg.interpolation
+    img_size = arg.image_size
 
     #print("folderA = {}, direction = {} ".format(arg[0],domains[directions]))
     if not os.path.exists(OUT_DIR_A2B):
         os.makedirs(OUT_DIR_A2B)
     folderA2B = folder_path
     filesA2B = os.listdir(folderA2B)
-    img_size = 256
+
 
     start = time.time()
 
@@ -37,15 +38,15 @@ def main(arg):
     alpha = tf.placeholder(tf.float32, [])
     alpha_t = tf.reshape(alpha, [1,1])
     v12 = label_2 - label_1
-    fake_alp = buildGenerator(real_1,v12*alpha_t,num_domains, reuse=False, name="gen")
+    fake_alp = buildGenerator(real_1,v12*alpha_t,num_domains, reuse=False, name="gen",isTraining=False)
 
     sess = tf.Session()
     saver = tf.train.Saver()
 
     ckpt = tf.train.get_checkpoint_state(MODEL_DIR)
     if ckpt: # checkpointがある場合
-        #last_model = ckpt.all_model_checkpoint_paths[3]
-        last_model = ckpt.model_checkpoint_path # 最後に保存したmodelへのパス
+        last_model = ckpt.all_model_checkpoint_paths[1]
+        #last_model = ckpt.model_checkpoint_path # 最後に保存したmodelへのパス
         print ("load " + last_model)
 
         saver.restore(sess, last_model) # 変数データの読み込み
@@ -68,8 +69,8 @@ def main(arg):
         img = (img-127.5)/127.5
         h,w = img.shape[:2]
 
-        input = cv2.resize(img,(img_size,img_size))
-        input = input.reshape(1, img_size, img_size, 3)
+        img = cv2.resize(img,(img_size,img_size))
+        input = img.reshape(1, img_size, img_size, 3)
 
         x_label = source_label
         y_label = target_label
@@ -83,9 +84,10 @@ def main(arg):
 
         out = sess.run(fake_alp,feed_dict=feed)
         out = out.reshape(img_size,img_size,3)
+        out = np.concatenate([img, out],axis=1)
         image_name = os.path.splitext(os.path.basename(img_path))[0]
         denorm_o = (out + 1) * 127.5
-        cv2.imwrite(OUT_DIR_A2B+os.sep+'predicted_' + image_name + "_" + str(target_label) + '.png', denorm_o)
+        cv2.imwrite(OUT_DIR_A2B+os.sep+'predicted_' + image_name + "_from" + str(source_label) +"to"+str(target_label)+ '.png', denorm_o)
 
     print("%.4e sec took for predicting" %(time.time()-start))
 
@@ -94,7 +96,8 @@ if __name__ == '__main__':
     parser.add_argument('--folder',"-f", dest='folder', type=str, default=None, help='folder name')
     parser.add_argument('--source_label',"-s", dest='source_label', type=int, default=None, help='source label')
     parser.add_argument('--target_label',"-t", dest='target_label', type=int, default=None, help='target label')
-    parser.add_argument('--interpolation',"-i", dest='interpolation', type=float, default=1.0, help='interpolation late(0<interp<1)')
+    parser.add_argument('--image_size',"-is", dest='image_size', type=int, default=256, help='image size')
+    parser.add_argument('--interpolation',"-ip", dest='interpolation', type=float, default=1.0, help='interpolation late(0<interp<1)')
     args = parser.parse_args()
 
     main(args)

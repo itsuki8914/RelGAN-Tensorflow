@@ -50,7 +50,7 @@ def main():
     lr = tf.placeholder(tf.float32)
 
     trans_lr = 1e-4
-    max_step = 100000
+    max_step = 200000
     gp_lmd = 10
     cls_lmd = 1
     critic = 5
@@ -67,13 +67,15 @@ def main():
     # sample images
     _Z = np.zeros([bs,img_size,img_size,3])
     _X, x_atr, _, y_atr, _, z_atr  = btGen.getBatch(bs)
+    for im in range(len(_X)):
+        cv2.putText(_X[im], '{}'.format(x_atr[im]), (img_size-18, img_size-8), cv2.FONT_HERSHEY_COMPLEX, 0.8, (0, 0, 0), lineType=cv2.LINE_AA)
+
     _Z = (_X + 1)*127.5
     #print(x_atr)
     #print(y_atr)
     #print(z_atr)
     _Z = tileImage(_Z)
     cv2.imwrite("input.png",_Z)
-
 
     #build models
     start = time.time()
@@ -93,15 +95,18 @@ def main():
     #alpha_t = tf.reshape(alpha_t, [bs,num_domains])
     #print(alpha)
 
-    fake_12 = buildGenerator(real_1,v12,num_domains, reuse=False, name="gen")
-    #print(fake_12)
-    fake_11 = buildGenerator(real_1,label_2-label_2,num_domains, reuse=True, name="gen")
-    fake_alp = buildGenerator(real_1,v12*alpha_t,num_domains, reuse=True, name="gen")
+    fake_12 = buildGenerator(real_1,v12,num_domains, reuse=False, name="gen", isTraining=True)
+    fake_11 = buildGenerator(real_1,label_2-label_2,num_domains, reuse=True, name="gen", isTraining=True)
+    fake_alp = buildGenerator(real_1,v12*alpha_t,num_domains, reuse=True, name="gen", isTraining=True)
+
+    fake_12_val = buildGenerator(real_1,v12,num_domains, reuse=True, name="gen", isTraining=False)
+    fake_11_val = buildGenerator(real_1,label_2-label_2,num_domains, reuse=True, name="gen", isTraining=False)
+    fake_alp_val = buildGenerator(real_1,v12*alpha_t,num_domains, reuse=True, name="gen", isTraining=False)
 
     g_loss = 0
     d_loss = 0
     adv_d_lambda = 1
-    con_d_lambda = 10
+    con_d_lambda = 1
     int_d_lambda = 10
     adv_g_lambda = 1
     con_g_lambda = 1
@@ -112,23 +117,36 @@ def main():
     # Adversarial Loss(LS-GAN)
     adv_fake = buildDiscriminator(fake_12,None,v12,num_domains,reuse=[0,0],method="adv")
     adv_real = buildDiscriminator(real_2,None,v12,num_domains,reuse=[1,1],method="adv")
+    adv_fake_a = buildDiscriminator(fake_alp,None,v12*alpha_t,num_domains,reuse=[1,1],method="adv")
     d_adv_loss = (tf.reduce_mean(tf.square(adv_real-tf.ones_like(adv_real))) + tf.reduce_mean(tf.square(adv_fake-tf.zeros_like(adv_fake)))) * adv_d_lambda
     d_loss += d_adv_loss
-    g_adv_loss =tf.reduce_mean(tf.square(adv_fake-tf.ones_like(adv_fake))) * adv_g_lambda
+    g_adv_loss = tf.reduce_mean(tf.square(adv_fake-tf.ones_like(adv_fake))) * adv_g_lambda
     g_loss += g_adv_loss
 
     # Interpolation Loss
-    int_fake11 = buildDiscriminator(fake_11,None,0,num_domains,reuse=[1,0],method="int")
+    int_fake11 = buildDiscriminator(fake_11,None,v12-v12,num_domains,reuse=[1,0],method="int")
     int_fake12 = buildDiscriminator(fake_12,None,v12,num_domains,reuse=[1,1],method="int")
     int_fakealp = buildDiscriminator(fake_alp,None,v12*alpha_t,num_domains, reuse=[1,1],method="int")
     """
-    d_int_loss = tf.reduce_mean(tf.where(rnd_ph==0,
-        tf.square(int_fake11 - tf.zeros_like(int_fake11))+tf.square(int_fakealp - tf.reshape(alpha_1,[bs,1,1])),
-        tf.square(int_fake12 - tf.zeros_like(int_fake12))+tf.square(int_fakealp -tf.reshape((1-alpha_1),[bs,1,1])))) * int_d_lambda
-    """
+    d_int_loss = tf.reduce_mean(tf.where(alpha_1<=0.5,
+        tf.square(int_fake11 - tf.zeros_like(int_fake11))+tf.square(int_fakealp - tf.ones_like(int_fake11)*alpha_1),
+        tf.square(int_fake12 - tf.zeros_like(int_fake12))+tf.square(int_fakealp - tf.ones_like(int_fake11)*(1-alpha_1)))) * int_d_lambda
+
     d_int_loss = tf.reduce_mean(tf.cond(tf.constant(rnd_ph==0, dtype=tf.bool),
-        lambda:tf.square(int_fake11 - tf.zeros_like(int_fake11))+tf.square(int_fakealp - tf.reshape(alpha_1,[bs,1,1])),
-        lambda:tf.square(int_fake12 - tf.zeros_like(int_fake12))+tf.square(int_fakealp -tf.reshape((1-alpha_1),[bs,1,1])))) * int_d_lambda
+        lambda:tf.square(int_fake11 - tf.zeros_like(int_fake11))+tf.square(int_fakealp - tf.reshape(alpha_1,[bs,1,1,1])),
+        lambda:tf.square(int_fake12 - tf.zeros_like(int_fake12))+tf.square(int_fakealp -tf.reshape((1-alpha_1),[bs,1,1,1])))) * int_d_lambda
+    """
+    """
+    d_int_loss = (tf.square(int_fake11 - tf.zeros_like(int_fake11))+tf.square(int_fakealp - tf.ones_like(int_fakealp)*tf.reshape(alpha,[bs,1,1,1]))) if rnd_ph==0 \
+            else (tf.square(int_fake12 - tf.zeros_like(int_fake12))+tf.square(int_fakealp - tf.ones_like(int_fakealp)*tf.reshape((1-alpha),[bs,1,1,1])))
+    """
+    i_1 = tf.square(int_fake11 - tf.zeros_like(int_fake11)) if rnd_ph==0 else tf.square(int_fake12 - tf.zeros_like(int_fake12))
+    i_1 = tf.reduce_mean(i_1)
+    i_2 = tf.square(int_fakealp - tf.ones_like(int_fakealp)*tf.reshape(alpha,[bs,1,1,1])) if rnd_ph==0 else tf.square(int_fakealp - tf.ones_like(int_fakealp)*tf.reshape((1-alpha),[bs,1,1,1]))
+    i_2 = tf.reduce_mean(i_2)
+    d_int_loss = i_1+i_2
+    #d_int_loss = tf.reduce_mean(d_int_loss)
+    d_int_loss *= int_d_lambda
 
     d_loss += d_int_loss
     g_int_loss = tf.reduce_mean(tf.square(int_fakealp) - tf.zeros_like(int_fakealp)) * int_g_lambda
@@ -164,12 +182,11 @@ def main():
     # Self Reconstruction Loss
     g_self_loss = tf.reduce_mean(tf.abs(real_1 - fake_11)) * sel_g_lambda
     g_loss += g_self_loss
+
     wd_gen = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES,scope="gen")
     wd_dis = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES,scope="dis")
-
     wd_gen = tf.reduce_sum(wd_gen)
     wd_dis = tf.reduce_sum(wd_dis)
-
     g_loss += wd_gen
     d_loss += wd_dis
 
@@ -213,7 +230,6 @@ def main():
     start = time.time()
 
     for i in range(max_step + 1):
-
         x, x_label, y, y_label, z, z_label = btGen.getBatch(bs)
         x_labels = np.zeros([bs, num_domains])
         y_labels = np.zeros([bs, num_domains])
@@ -225,20 +241,21 @@ def main():
 
         rnd = np.random.randint(2)
         alp = np.random.uniform(0, 0.5, size=bs) if rnd==0 else np.random.uniform(0.5, 1.0, size=bs)
-
+        #alp = np.random.uniform(0, 1.0, size=bs)
         feed ={real_1:x, real_2:y, real_3:z, label_1:x_labels,
             label_2:y_labels, label_3:z_labels, alpha:alp, rnd_ph:rnd, lr: trans_lr}
-        _, dis_loss, dis_adv, dis_cond, dis_int = sess.run(
-            [d_opt, d_loss, d_adv_loss, d_cond_loss, d_int_loss], feed_dict=feed)
+        _, dis_loss, dis_adv, dis_cond, dis_int, I1, I2 = sess.run(
+            [d_opt, d_loss, d_adv_loss, d_cond_loss, d_int_loss, i_1, i_2], feed_dict=feed)
 
         rnd = np.random.randint(2)
         alp = np.random.uniform(0, 0.5, size=bs) if rnd==0 else np.random.uniform(0.5, 1.0, size=bs)
+        #alp = np.random.uniform(0, 1, size=bs)
         feed ={real_1:x, label_1:x_labels, label_2:y_labels, alpha:alp, rnd_ph:rnd, lr: trans_lr}
 
         _, gen_loss, gen_adv, gen_cond, gen_int, gen_rec, gen_self = sess.run(
             [g_opt, g_loss, g_adv_loss, g_cond_loss, g_int_loss, g_rec_loss, g_self_loss], feed_dict=feed)
 
-        trans_lr = trans_lr *(1 - 2/max_step)
+        trans_lr = trans_lr *(1 - 1/max_step)
 
         print("in step %s, dis_loss = %.4e,  gen_loss = %.4e"%(i, dis_loss, gen_loss))
         print("d_a=%.3e d_c=%.3e d_i=%.3e"%(dis_adv,dis_cond,dis_int))
@@ -246,6 +263,14 @@ def main():
 
         dis_hist.append(dis_loss)
         gen_hist.append(gen_loss)
+
+        #doubtful,alpt = sess.run([doubt,alpha_t],feed_dict=feed)
+        #print(doubtful[0])
+        #print(alpt[0])
+        #I1,I2 = sess.run([i_1,i_2],feed_dict=feed)
+        print(I1)
+        print(I2)
+
 
         if i % 100 ==0:
             x, x_label, y, y_label, z, z_label = valGen.getBatch(bs)
@@ -256,21 +281,28 @@ def main():
                 x_labels[b] = np.identity(num_domains)[x_label[b]]
                 y_labels[b] = np.identity(num_domains)[y_label[b]]
                 z_labels[b] = np.identity(num_domains)[z_label[b]]
-
-            alp = np.random.uniform(0, 0.5, size=bs) if rnd==0 else np.random.uniform(0.5, 1.0, size=bs)
+            rnd = np.random.randint(2)
+            #alp = np.random.uniform(0, 0.5, size=bs) if rnd==0 else np.random.uniform(0.5, 1.0, size=bs)
+            alp=np.random.uniform(0, 1, size=bs)
             feed ={real_1:x, label_1:x_labels, label_2:y_labels, alpha:alp, rnd_ph:rnd, lr: trans_lr}
 
-            img_fake_A2B = sess.run(fake_12,feed_dict=feed)
+            img_fake_A2B = sess.run(fake_12_val,feed_dict=feed)
+            img_fake_alp = sess.run(fake_alp_val,feed_dict=feed)
+            img_fake_A2A = sess.run(fake_11_val,feed_dict=feed)
 
             for im in range(len(x)):
                 cv2.putText(x[im], '{}'.format(x_label[im]), (img_size-18, img_size-8), cv2.FONT_HERSHEY_COMPLEX, 0.8, (0, 0, 0), lineType=cv2.LINE_AA)
+                cv2.putText(img_fake_alp[im], '{}'.format(y_label[im]), (img_size-18, img_size-8), cv2.FONT_HERSHEY_COMPLEX, 0.8, (0, 0, 0), lineType=cv2.LINE_AA)
+                cv2.putText(img_fake_alp[im], '%.2f'%(alp[im]), (0, img_size-8), cv2.FONT_HERSHEY_COMPLEX, 0.8, (0, 0, 0), lineType=cv2.LINE_AA)
                 cv2.putText(img_fake_A2B[im], '{}'.format(y_label[im]), (img_size-18, img_size-8), cv2.FONT_HERSHEY_COMPLEX, 0.8, (0, 0, 0), lineType=cv2.LINE_AA)
-                cv2.putText(img_fake_A2B[im], '%.2f'%(alp[im]), (0, img_size-8), cv2.FONT_HERSHEY_COMPLEX, 0.8, (0, 0, 0), lineType=cv2.LINE_AA)
+                cv2.putText(img_fake_A2B[im], '%.2f'%(1.0), (0, img_size-8), cv2.FONT_HERSHEY_COMPLEX, 0.8, (0, 0, 0), lineType=cv2.LINE_AA)
 
             _A = tileImage(x)
             _A2B = tileImage(img_fake_A2B)
+            _A2a = tileImage(img_fake_alp)
+            _A2A = tileImage(img_fake_A2A)
 
-            _Z = np.concatenate([_A,_A2B],axis=1)
+            _Z = np.concatenate([_A,_A2a,_A2B,_A2A],axis=1)
             _Z = ( _Z + 1) * 127.5
             cv2.imwrite("%s/%s.png"%(SVIM_DIR, i),_Z)
 
@@ -279,8 +311,8 @@ def main():
             plt.title("Loss")
             plt.grid(which="both")
             plt.yscale("log")
-            ax.plot(gen_hist,label="g_loss", linewidth = 0.25)
             ax.plot(dis_hist,label="d_loss", linewidth = 0.25)
+            ax.plot(gen_hist,label="g_loss", linewidth = 0.25)
             plt.xlabel('step', fontsize = 16)
             plt.ylabel('loss', fontsize = 16)
             plt.legend(loc='upper left')
