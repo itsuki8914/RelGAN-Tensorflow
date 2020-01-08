@@ -1,7 +1,7 @@
 # RelGAN-Tensorflow
 A implementation of RelGAN(Image translation)
 
-On experiment
+Under experiment
 
 ## Result examples
 Hair color morphing of anime face
